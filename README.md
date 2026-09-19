@@ -277,16 +277,44 @@ install on a PC.
 ```bash
 git clone https://github.com/waveshare/e-Paper ~/e-Paper
 ./venv/bin/pip install ~/e-Paper/RaspberryPi_JetsonNano/python
+./venv/bin/pip install -r requirements-pi.txt
 ```
 
-Check that path against the repo you actually cloned — Waveshare move things
-between releases. Then confirm the module imports and matches your panel:
+Check the driver path against the repo you actually cloned — Waveshare move
+things between releases.
+
+That second install matters. The driver's `epdconfig` imports `spidev` and
+either `RPi.GPIO` or `gpiozero` depending on its vintage, but its `setup.py`
+declares none of them - so installing the driver on its own still fails at
+runtime with `No module named spidev`, then `No module named gpiozero`, one at a
+time. `requirements-pi.txt` carries the whole set so you hit neither. They are
+kept out of `requirements.txt` because they need real hardware and would break a
+PC install.
+
+Rather than checking the imports one by one, construct the driver - that
+exercises the same path the dashboard will:
 
 ```bash
-./venv/bin/python -c "from waveshare_epd import epd7in5_V2 as d; e=d.EPD(); print(e.width, e.height)"
+./venv/bin/python -c "from waveshare_epd import epd7in5_V2 as d; e = d.EPD(); print('panel', e.width, e.height)"
 ```
 
-Expect `800 480`. If that import fails, see the two snags below.
+Expect `panel 800 480`. If the driver goes through gpiozero, confirm it found a
+pin factory too, since that fails later rather than at import:
+
+```bash
+./venv/bin/python -c "from gpiozero import Device; Device.ensure_pin_factory(); print(Device.pin_factory)"
+```
+
+You want `LGPIOFactory`. If you see `RPiGPIOFactory` after a `No module named
+lgpio` warning, gpiozero has fallen back to RPi.GPIO - which imports fine but
+will fail later with `Failed to add edge detection` on Bookworm and later. Treat
+that fallback as a problem to fix now, not as a warning to ignore.
+
+To skip that probe and keep cron logs quiet, uncomment `GPIOZERO_PIN_FACTORY`
+in `.env`. It works because `config.py` loads `.env` into the environment before
+the driver - and therefore gpiozero - is ever imported.
+
+If either fails, see the two snags below.
 
 ### 6. Light the panel with the test card
 
@@ -316,31 +344,117 @@ Once you are happy, set `EPAPER_MODE=real` in `.env` so a plain `main.py` does
 the right thing, and add it to cron:
 
 ```cron
-*/30 * * * * cd /home/pi/pi-frame && ./venv/bin/python main.py >> /tmp/pi-frame.log 2>&1
+@reboot        sleep 60 && cd /home/pi/pi-frame && ./venv/bin/python main.py >> /tmp/pi-frame.log 2>&1
+*/30 * * * *   cd /home/pi/pi-frame && ./venv/bin/python main.py >> /tmp/pi-frame.log 2>&1
 ```
 
+Adjust the path to your own home directory. The `@reboot` line matters because
+e-paper is bistable: after a power cut the panel still shows whatever was last
+drawn, so without it the frame would display stale data until the next half-hour
+slot. The `sleep 60` gives the network time to come up first.
+
 `main.py` exits non-zero and logs the cause on unexpected failures, which is
-what makes an unattended job debuggable. Note that e-paper panels have a finite
-number of refreshes and each full refresh takes seconds — every 15-30 minutes
-is sensible, every minute is not.
+what makes an unattended job debuggable.
 
-### Two likely snags
+### Power, and leaving it switched off
 
-**The driver imports but fails on GPIO.** This does not affect a Pi 3B, where
-the classic `RPi.GPIO` backend still works. It bites on the Pi 5, and on
-Bookworm more generally, which Recent Waveshare drivers can use `gpiozero`
-plus `lgpio` instead; older ones cannot. If you see `RPi.GPIO`-related errors:
+E-paper holds its image with no power at all, which has two consequences:
+
+* **Switching the Pi off is safe.** Cutting power to the Pi cuts it to the HAT
+  too, so the panel cannot be left in the high-voltage state that damages it.
+  The image simply stays on screen, frozen, until something redraws it.
+* **The image stays there indefinitely** - including while you are building a
+  case, or if the Pi sits unplugged for weeks. Waveshare advise against leaving
+  one image standing that long, so blank the panel before a long layoff:
+
+  ```bash
+  ./venv/bin/python main.py --clear
+  ```
+
+  It leaves the panel white and asleep, which is the safe state to store it in.
+
+On power-up nothing refreshes by itself, so pair the `@reboot` cron line above
+with the periodic one.
+
+### How often may it refresh?
+
+Waveshare's manual for this panel gives three rules, and they are not the ones
+people usually assume:
+
+* **At least 180 seconds between refreshes.** This is the real floor, not the
+  cycle count.
+* **At least one refresh every 24 hours.** Leaving an image standing
+  indefinitely is its own hazard, so a paused cron job is worse than a slow one.
+* **Sleep or power off the panel whenever it is not refreshing** - a prolonged
+  high-voltage state "will damage the e-Paper and cannot be repaired". This is
+  why `_shutdown()` in `display/epaper_output.py` always calls `epd.sleep()`,
+  even when the refresh itself failed.
+
+The lifespan is quoted at roughly **1,000,000 refreshes**, which is far less
+binding than it sounds:
+
+| Interval | Per year | Lifespan |
+| --- | --- | --- |
+| every 3 min (the floor) | 175,000 | ~6 years |
+| every 15 min | 35,000 | ~29 years |
+| every 30 min | 17,500 | ~57 years |
+
+So pick the interval for freshness and power, not out of fear of wearing the
+panel out. Every 15-30 minutes suits a weather and agenda board; going below
+3 minutes is the thing to actually avoid.
+
+### If the panel will not come up
+
+**Missing GPIO/SPI modules, one at a time.** `No module named spidev`, then
+`No module named gpiozero`: the driver declares none of its dependencies, so
+they surface one per run. `requirements-pi.txt` installs the whole set at once,
+which is the fix.
+
+**`Failed to add edge detection`.** The single most likely failure, and it looks
+like a hardware fault because it happens long after everything has imported
+cleanly. It is not: `RPi.GPIO` 0.7.1 is unmaintained and its edge detection does
+not work against kernel 6.6+, which is Raspberry Pi OS Bookworm and later on
+**every model, the Pi 3B included**. It still sets pin levels, so the driver
+imports, initialises, and only falls over when it first waits on the panel's
+BUSY pin. The fix is to use the `lgpio` backend instead:
+
+```bash
+sudo apt install -y python3-dev swig liblgpio-dev
+./venv/bin/pip install lgpio
+./venv/bin/pip uninstall -y RPi.GPIO      # so gpiozero cannot pick it again
+```
+
+then set `GPIOZERO_PIN_FACTORY=lgpio` in `.env`.
+
+**`lgpio` fails to build a wheel.** It has no prebuilt wheel and compiles from
+source, which needs three things, and the error tells you which is missing:
+
+| Error | Missing |
+| --- | --- |
+| `swig: command not found` | `swig` |
+| `Python.h: No such file or directory` | `python3-dev` |
+| `/usr/bin/ld: cannot find -llgpio` | `liblgpio-dev` |
+
+The last one catches people out because swig and the compile both succeed - the
+Python package is only a thin binding over the `liblgpio` C library, so it gets
+all the way to the linker before failing.
+
+If you would rather not compile at all, take apt's prebuilt binding and let the
+venv see it:
 
 ```bash
 sudo apt install -y python3-lgpio
-./venv/bin/pip install lgpio gpiozero spidev
+python3 -m venv --system-site-packages venv
+./venv/bin/pip install -r requirements.txt
 ```
 
-and make sure you cloned a recent `e-Paper` checkout.
+**gpiozero cannot find a pin factory.** It needs a backend to reach the pins. Use
+`lgpio` per the above; `rpi-lgpio` is an alternative drop-in that keeps the
+`RPi.GPIO` API while using lgpio underneath.
 
-**The venv cannot see system GPIO packages.** If the driver expects
-apt-installed modules, either install them into the venv as above, or recreate
-the venv with access to them:
+**The venv cannot see system GPIO packages.** apt packages such as
+`python3-lgpio` are invisible inside a venv. Either install the pip equivalents
+as above, or recreate the venv with access to them:
 
 ```bash
 python3 -m venv --system-site-packages venv
@@ -358,6 +472,10 @@ it actually has:
 
 That prints every driver module the installed Waveshare package provides, with
 each one's native resolution, and flags the configured one.
+
+A module listed as `(could not read size)` is a warning, not cosmetic: the
+module is present but raised on import, which almost always means a missing
+dependency such as `spidev`. Fix that before trying to drive the panel.
 
 Matching it to the hardware needs care, because **Waveshare SKU 13504 has
 shipped as two incompatible panels under the same product number**:

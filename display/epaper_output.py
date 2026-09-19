@@ -6,6 +6,8 @@ imports cleanly on a development PC where those libraries do not exist.
 """
 
 import logging
+import signal
+from contextlib import contextmanager
 from datetime import datetime
 
 from PIL import Image
@@ -27,6 +29,38 @@ def output_image(image: Image.Image, mode: str = None) -> None:
         _output_to_epaper(image)
     else:
         _output_preview(image)
+
+
+@contextmanager
+def _sigterm_unwinds():
+    """Make SIGTERM raise, so the `finally` that sleeps the panel actually runs.
+
+    Python's default SIGTERM handler exits the process immediately without
+    unwinding the stack, which would leave the panel powered - the one state
+    Waveshare say "will damage the e-Paper and cannot be repaired". `docker
+    stop` and `systemctl stop` both send SIGTERM, so this is not hypothetical.
+
+    SIGKILL cannot be caught, but cutting power to the Pi also cuts it to the
+    HAT, so the dangerous case is specifically a killed process on a Pi that
+    stays up.
+    """
+
+    def handler(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    try:
+        previous = signal.signal(signal.SIGTERM, handler)
+    except ValueError:
+        # Handlers can only be installed from the main thread. Off it, carry on
+        # unguarded rather than failing an otherwise fine refresh.
+        log.debug("Not on the main thread - SIGTERM guard not installed")
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _output_to_epaper(image: Image.Image) -> None:
@@ -54,6 +88,11 @@ def _output_to_epaper(image: Image.Image) -> None:
     epd = driver.EPD()
     log.info("Panel reports %dx%d", epd.width, epd.height)
 
+    with _sigterm_unwinds():
+        _refresh(epd, driver, image)
+
+
+def _refresh(epd, driver, image: Image.Image) -> None:
     try:
         epd.init()
         if config.EPAPER_CLEAR_FIRST:
@@ -105,6 +144,32 @@ def _shutdown(epd, driver) -> None:
         module_exit()  # pre-cleanup-kwarg driver releases
     except Exception:  # noqa: BLE001
         log.exception("epdconfig.module_exit() failed")
+
+
+def clear_panel(mode: str = None) -> None:
+    """Blank the panel to white, then sleep it.
+
+    Worth doing before the panel is left unpowered for a long stretch. E-paper
+    is bistable, so whatever is on screen stays there with no power at all - and
+    Waveshare advise against leaving one image standing indefinitely. A white
+    screen is the safe thing to leave behind.
+    """
+    mode = (mode or config.EPAPER_MODE or "preview").strip().lower()
+    if mode != "real":
+        print("Nothing to clear: not in real mode (this only affects the panel).")
+        return
+
+    import importlib
+
+    driver = importlib.import_module(f"waveshare_epd.{config.EPAPER_PANEL_MODEL}")
+    epd = driver.EPD()
+    with _sigterm_unwinds():
+        try:
+            epd.init()
+            epd.Clear()
+            log.info("Panel cleared to white")
+        finally:
+            _shutdown(epd, driver)
 
 
 def _output_preview(image: Image.Image) -> None:

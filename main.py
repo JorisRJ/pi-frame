@@ -4,6 +4,7 @@
     python main.py --mode preview # force a preview PNG, even on the Pi
     python main.py --mode real    # force a push to the e-paper panel
     python main.py --test-pattern # panel bring-up card instead of the dashboard
+    python main.py --clear        # blank the panel before storing it unpowered
 """
 
 import argparse
@@ -11,7 +12,7 @@ import logging
 import sys
 
 import config
-from display.epaper_output import output_image
+from display.epaper_output import clear_panel, output_image
 from render import build_dashboard_image
 from sources.calendar_feed import get_events
 from sources.news import get_news
@@ -27,6 +28,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         choices=["preview", "real"],
         default=None,
         help="Override EPAPER_MODE from .env for this run.",
+    )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Blank the panel to white and exit. Use before storing it unpowered.",
     )
     parser.add_argument(
         "--list-panels",
@@ -95,6 +101,10 @@ def main(argv=None) -> int:
     try:
         if args.list_panels:
             return _list_panels()
+
+        if args.clear:
+            clear_panel(mode=mode)
+            return 0
 
         if args.test_pattern:
             # No network, no data sources: this is purely about the panel.

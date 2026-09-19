@@ -1,0 +1,35 @@
+# Raspberry Pi only. Do NOT install these on a development PC - they need real
+# GPIO/SPI hardware and will fail to build or import.
+#
+#   sudo apt install -y python3-dev swig liblgpio-dev   # lgpio compiles+links
+#   ./venv/bin/pip install -r requirements-pi.txt
+#
+# The Waveshare driver itself is not on PyPI and is installed separately from
+# its git checkout (see the README). What follows are the dependencies its
+# epdconfig imports but does not declare in its own setup.py, which is why
+# installing the driver alone fails at runtime with "No module named spidev",
+# then "No module named gpiozero", one per attempt.
+
+# Talks to the panel over /dev/spidev0.0.
+spidev
+
+# Newer Waveshare drivers drive the GPIO through gpiozero.
+gpiozero
+
+# gpiozero's backend. lgpio is required rather than optional on Raspberry Pi OS
+# Bookworm and later, on EVERY model including the Pi 3B: the older RPi.GPIO
+# backend still sets pin levels, but its edge detection is broken against kernel
+# 6.6+ and fails with "Failed to add edge detection" the moment the driver waits
+# on the panel's BUSY pin. That is a runtime failure well after import, so it
+# looks like a panel fault rather than a dependency problem.
+#
+# It has no prebuilt wheel, so it compiles: `python3-dev` and `swig` to build the
+# wrapper, and `liblgpio-dev` to link against - the Python package is only a thin
+# binding over the liblgpio C library, so without it the build gets all the way
+# to the linker and stops at "cannot find -llgpio".
+#
+# If compiling is not an option, use the apt build instead and give the venv
+# sight of it:
+#     sudo apt install -y python3-lgpio
+#     python3 -m venv --system-site-packages venv
+lgpio
