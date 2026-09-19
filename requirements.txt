@@ -1,0 +1,6 @@
+Pillow
+requests
+feedparser
+icalendar
+recurring-ical-events
+python-dotenv
