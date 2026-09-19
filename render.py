@@ -27,6 +27,7 @@ from typing import Any, Dict, List
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+import icons
 from icons import draw_icon_for_code
 from sources.calendar_feed import DAY_LABELS, day_offset, format_event_clock
 
@@ -57,14 +58,14 @@ FONT_TEMP = 76  # Oswald is condensed, so it can carry more size than DejaVu
 FONT_SECTION = 24
 FONT_UNIT = 24  # the "degrees C" beside the big temperature
 FONT_FEELS = 16
-FONT_EVENT = 18
-FONT_NEWS_TITLE = 17
+FONT_EVENT = 20
+FONT_NEWS_TITLE = 19
 FONT_NEWS_META = 12
-FONT_HOUR_TIME = 15
+FONT_HOUR_TIME = 17
 FONT_HOUR_TEMP = 19
 
 # --- Weather block ----------------------------------------------------------
-ICON_LARGE = 78  # current-conditions icon, top right
+ICON_LARGE = 78  # fallback only; the icon is normally sized to the temperature
 ICON_SMALL = 26  # per-column icon in the forecast strip
 ICON_GAP = 14  # clearance between the description text and the large icon
 WEATHER_DESC_GAP = 8  # "degrees C" -> description
@@ -79,12 +80,12 @@ HOURLY_TEMP_GAP = 4  # icon -> temperature
 SECTION_HEADER_HEIGHT = FONT_SECTION + 4 + 10  # label, rule, gap below it
 EVENT_TIME_MIN = 62  # fits "09:30"; grows for "Hele dag" when one is shown
 EVENT_TIME_PADDING = 14
-EVENT_LINE_HEIGHT = 22
+EVENT_LINE_HEIGHT = 24
 EVENT_GAP = 8
 EVENT_MAX_LINES = 2
 
 # --- News block -------------------------------------------------------------
-NEWS_LINE_HEIGHT = 21
+NEWS_LINE_HEIGHT = 23
 NEWS_MAX_LINES = 2
 NEWS_META_GAP = 4
 NEWS_ITEM_GAP = 10
@@ -256,27 +257,33 @@ def draw_weather_block(
     draw: ImageDraw.ImageDraw, y: int, weather: Dict[str, Any], fonts: Fonts
 ) -> int:
     """Current temperature, conditions and icon, then a stepped forecast strip."""
+    temp_now = weather.get("temp_now")
+    temp_text = _format_temp(temp_now) if temp_now is not None else ""
+
     code = weather.get("code")
     if code is not None:
-        draw_icon_for_code(
-            draw,
-            code,
-            weather.get("is_day", True),
-            WIDTH - MARGIN - ICON_LARGE,
-            y + 2,
-            ICON_LARGE,
+        # Match the icon's ink height to the temperature's, so the two read as
+        # one line. Sizing by the icon's box instead would leave a cloud looking
+        # half the height of the figures, since icons fill their boxes by very
+        # different amounts.
+        name = icons.icon_for_code(code, weather.get("is_day", True))
+        target = (
+            _ink_height_of(draw, temp_text, fonts.temp) if temp_text else ICON_LARGE
         )
-        text_limit = WIDTH - MARGIN - ICON_LARGE - ICON_GAP
+        size = icons.size_for_ink_height(name, target)
+        box = icons.ink_box(name, size)
+        # Placed by its ink too: right edge on the margin, top level with the
+        # top of the figures.
+        icons.draw_icon(draw, name, WIDTH - MARGIN - box[2], y - box[1], size)
+        text_limit = WIDTH - MARGIN - (box[2] - box[0]) - ICON_GAP
     else:
         text_limit = WIDTH - MARGIN
 
-    temp_now = weather.get("temp_now")
     if temp_now is None:
         # No reading: show the message on its own rather than a giant "--",
         # which has no cap height to align anything else against.
         temp_height, unit_height, text_x = 0, 0, MARGIN
     else:
-        temp_text = _format_temp(temp_now)
         temp_height = _draw_ink_top(draw, (MARGIN, y), temp_text, fonts.temp)
         text_x = MARGIN + _text_width(draw, temp_text, fonts.temp) + 12
         # The unit's ink top is aligned with the numerals' ink top, so "degrees

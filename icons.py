@@ -376,6 +376,32 @@ def render_icon(name: str, size: int) -> Image.Image:
     return small.point(lambda value: 255 if value >= _THRESHOLD else 0).convert("1")
 
 
+@lru_cache(maxsize=None)
+def ink_box(name: str, size: int):
+    """The bounding box of an icon's actual ink within its square box.
+
+    Icons do not fill their box, and not by equal amounts: at box size 78 a
+    thunder cloud inks 75px tall while a plain cloud inks 42px. Anything that
+    needs to size or align an icon against something else has to work from this
+    rather than from the box.
+    """
+    return render_icon(name, size).getbbox()
+
+
+def size_for_ink_height(name: str, target_height: int, probe: int = 120) -> int:
+    """The box size at which this icon's ink stands `target_height` px tall.
+
+    Ink scales linearly with the box, so one measurement at a probe size gives
+    the ratio. This is what lets the current-conditions icon match the height of
+    the temperature beside it whichever icon is showing.
+    """
+    box = ink_box(name, probe)
+    ink_height = box[3] - box[1]
+    if not ink_height:
+        return target_height
+    return max(1, round(probe * target_height / ink_height))
+
+
 def draw_icon(
     draw: ImageDraw.ImageDraw, name: str, x: float, y: float, size: int
 ) -> None:
