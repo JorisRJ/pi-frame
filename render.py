@@ -48,8 +48,8 @@ BACKGROUND = 255  # white
 FOREGROUND = 0  # black
 
 # --- Spacing ----------------------------------------------------------------
-MARGIN = 20  # left and right
-MARGIN_V = 40  # top and bottom
+MARGIN = 30  # left and right
+MARGIN_V = 60  # top and bottom
 BLOCK_GAP = 20
 LINE_GAP = 6
 
